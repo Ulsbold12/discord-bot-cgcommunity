@@ -1,0 +1,14 @@
+{
+  "name": "cs2-discord-bot",
+  "version": "1.0.0",
+  "description": "CS2 DatHost stats bot for Discord",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.0.0",
+    "dotenv": "^16.0.0",
+    "node-fetch": "^2.6.7"
+  }
+}
