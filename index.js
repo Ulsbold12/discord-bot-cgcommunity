@@ -7,17 +7,15 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const PORT = 3000;
 
-// Сүүлийн round_end data-г хадгалах (matchid-ээр)
-const lastRoundData = {};
+// Илгээсэн match-уудыг хадгалах (давхардахгүйн тулд)
+const sentMatches = new Set();
 
-// MatchZy webhook stats-г Discord embed болгох
-function buildStatsEmbed(mapResult, roundData) {
-  const team1 = mapResult.team1 || {};
-  const team2 = mapResult.team2 || {};
+function buildStatsEmbed(data) {
+  const team1 = data.team1 || {};
+  const team2 = data.team2 || {};
 
-  // Тоглогчдыг round_end data-аас авах
-  const t1players = roundData?.team1?.players || [];
-  const t2players = roundData?.team2?.players || [];
+  const t1players = team1.players || [];
+  const t2players = team2.players || [];
 
   const score1 = team1.score ?? 0;
   const score2 = team2.score ?? 0;
@@ -46,8 +44,6 @@ function buildStatsEmbed(mapResult, roundData) {
       .join("\n");
   };
 
-  const map = roundData?.map_name || mapResult.map || "Unknown";
-
   return new EmbedBuilder()
     .setTitle(`🎮 CS2 Match дууслаа!`)
     .setColor(0x00b4d8)
@@ -62,25 +58,23 @@ function buildStatsEmbed(mapResult, roundData) {
         value: formatPlayers(t2players) || "*Тоглогч байхгүй*",
         inline: false,
       },
-      { name: "🗺️ Map", value: map, inline: true },
       { name: "🏅 Үр дүн", value: winner, inline: true },
+      { name: "🔢 Round", value: String(data.round_number || 0), inline: true },
     )
     .setTimestamp();
 }
 
-// Discord-д stats илгээх
-async function sendStats(mapResult, roundData) {
+async function sendStats(data) {
   try {
     const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
     if (!channel) return;
-    await channel.send({ embeds: [buildStatsEmbed(mapResult, roundData)] });
+    await channel.send({ embeds: [buildStatsEmbed(data)] });
     console.log("✅ Stats Discord-д илгээгдлээ!");
   } catch (err) {
     console.error("sendStats error:", err.message);
   }
 }
 
-// Webhook HTTP сервер
 const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/webhook") {
     let body = "";
@@ -91,22 +85,30 @@ const server = http.createServer((req, res) => {
       try {
         const data = JSON.parse(body);
         const event = data.event || "unknown";
-        const matchid = data.matchid || "default";
+        const matchid = data.matchid || "unknown";
         console.log(`📩 Event: "${event}" | Match: ${matchid}`);
 
-        // round_end-ийг хадгалах
         if (event === "round_end") {
-          lastRoundData[matchid] = data;
-          console.log(`💾 Round data хадгалагдлаа (match: ${matchid})`);
+          const score1 = data.team1?.score || 0;
+          const score2 = data.team2?.score || 0;
+          const maxScore = Math.max(score1, score2);
+
+          console.log(`📊 Score: ${score1} - ${score2}`);
+
+          // Match дуусах нөхцөл: 13 оноо эсвэл overtime (16+)
+          const matchKey = `${matchid}`;
+          if (maxScore >= 13 && !sentMatches.has(matchKey)) {
+            sentMatches.add(matchKey);
+            console.log(
+              `🎯 Match дууслаа! ${score1}-${score2} Stats илгээж байна...`,
+            );
+            await sendStats(data);
+          }
         }
 
-        // map_result ирэхэд сүүлийн round_end-тэй нэгтгэж илгээх
         if (event === "map_result") {
-          const roundData = lastRoundData[matchid];
-          console.log(
-            `🎯 Match дууслаа! Round data: ${roundData ? "байна" : "байхгүй"}`,
-          );
-          await sendStats(data, roundData);
+          console.log("📩 map_result ирлээ — илгээж байна...");
+          await sendStats(data);
         }
 
         res.writeHead(200);
