@@ -6,8 +6,6 @@ const fs = require("fs");
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -313,19 +311,17 @@ const server = http.createServer((req, res) => {
         res.end("Bad Request");
       }
     });
+  } else if (req.method === "GET" && req.url === "/leaderboard") {
+    const channel = await client.channels.fetch(DISCORD_CHANNEL_ID).catch(() => null);
+    if (channel) {
+      const lb = loadLeaderboard();
+      await channel.send({ embeds: [buildLeaderboardEmbed(lb)] });
+    }
+    res.writeHead(200);
+    res.end("Leaderboard илгээгдлээ!");
   } else {
     res.writeHead(200);
     res.end("Bot is running!");
-  }
-});
-
-// ── Discord commands ──────────────────────────────────────────────────────────
-
-client.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-  if (message.content.toLowerCase() === "!leaderboard") {
-    const lb = loadLeaderboard();
-    await message.channel.send({ embeds: [buildLeaderboardEmbed(lb)] });
   }
 });
 
