@@ -272,11 +272,16 @@ async function updateLiveScore(data) {
 
     const existing = liveScoreMessages.get(data.matchid);
     if (existing) {
-      await existing.edit({ embeds: [buildLiveEmbed(data)] });
-    } else {
-      const msg = await channel.send({ embeds: [buildLiveEmbed(data)] });
-      liveScoreMessages.set(data.matchid, msg);
+      try {
+        await existing.edit({ embeds: [buildLiveEmbed(data)] });
+        return;
+      } catch (_) {
+        // Message олдохгүй бол шинэ үүсгэнэ
+        liveScoreMessages.delete(data.matchid);
+      }
     }
+    const msg = await channel.send({ embeds: [buildLiveEmbed(data)] });
+    liveScoreMessages.set(data.matchid, msg);
   } catch (err) {
     console.error("updateLiveScore error:", err.message);
   }
