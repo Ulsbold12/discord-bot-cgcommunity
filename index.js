@@ -312,11 +312,10 @@ const server = http.createServer((req, res) => {
       }
     });
   } else if (req.method === "GET" && req.url === "/leaderboard") {
-    const channel = await client.channels.fetch(DISCORD_CHANNEL_ID).catch(() => null);
-    if (channel) {
+    client.channels.fetch(DISCORD_CHANNEL_ID).then(async (channel) => {
       const lb = loadLeaderboard();
       await channel.send({ embeds: [buildLeaderboardEmbed(lb)] });
-    }
+    }).catch(() => {});
     res.writeHead(200);
     res.end("Leaderboard илгээгдлээ!");
   } else {
@@ -327,7 +326,7 @@ const server = http.createServer((req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   console.log(`✅ Bot нэвтэрлээ: ${client.user.tag}`);
   server.listen(PORT, () => {
     console.log(`🌐 Webhook сервер port ${PORT} дээр ажиллаж байна.`);
