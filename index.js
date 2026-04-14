@@ -1,21 +1,21 @@
 require("dotenv").config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require("discord.js");
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-  ],
+  intents: [GatewayIntentBits.Guilds],
 });
 
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const PORT = 3000;
 const LEADERBOARD_FILE = "./leaderboard.json";
+const RENDER_URL = "https://discord-bot-cgcommunity.onrender.com";
 
 const sentMatches = new Set();
-const liveScoreMessages = new Map(); // matchid -> Discord message
-const matchStartTimes = new Map();   // matchid -> Date.now()
+const liveScoreMessages = new Map();
+const matchStartTimes = new Map();
 
 // ── Leaderboard ──────────────────────────────────────────────────────────────
 
@@ -44,7 +44,16 @@ function updateLeaderboard(data) {
     const id = p.steamid || p.name || "unknown";
     const s = p.stats || {};
     if (!lb[id]) {
-      lb[id] = { name: p.name || id, matches: 0, kills: 0, deaths: 0, assists: 0, damage: 0, headshots: 0, rounds: 0 };
+      lb[id] = {
+        name: p.name || id,
+        matches: 0,
+        kills: 0,
+        deaths: 0,
+        assists: 0,
+        damage: 0,
+        headshots: 0,
+        rounds: 0,
+      };
     }
     const e = lb[id];
     e.name = p.name || id;
@@ -62,7 +71,6 @@ function updateLeaderboard(data) {
 
 // ── Rating ───────────────────────────────────────────────────────────────────
 
-// Хялбаршуулсан HLTV-style rating
 function calcRating(kills, deaths, assists, damage, rounds) {
   if (!rounds) return 0;
   const kpr = kills / rounds;
@@ -78,7 +86,7 @@ function playerRating(stats, rounds) {
     stats.deaths || 0,
     stats.assists || 0,
     stats.damage || 0,
-    rounds
+    rounds,
   );
 }
 
@@ -102,22 +110,26 @@ function buildStatsEmbed(data) {
         ? `🏆 ${team2.name || "Team 2"} wins!`
         : "🤝 Draw!";
 
-  // MVP — хамгийн өндөр rating-тэй тоглогч
   const mvp = allPlayers.reduce((best, p) => {
     const r = playerRating(p.stats || {}, rounds);
     const br = playerRating(best?.stats || {}, rounds);
     return r > br ? p : best;
   }, null);
-  const mvpName = mvp ? (mvp.name || mvp.steamid || "Unknown") : null;
+  const mvpName = mvp ? mvp.name || mvp.steamid || "Unknown" : null;
 
-  // Match duration
   const startTime = matchStartTimes.get(data.matchid);
-  const duration = startTime ? Math.round((Date.now() - startTime) / 60000) : null;
+  const duration = startTime
+    ? Math.round((Date.now() - startTime) / 60000)
+    : null;
 
   const formatPlayers = (players) => {
     if (!players.length) return "*Тоглогч байхгүй*";
     return players
-      .sort((a, b) => playerRating(b.stats || {}, rounds) - playerRating(a.stats || {}, rounds))
+      .sort(
+        (a, b) =>
+          playerRating(b.stats || {}, rounds) -
+          playerRating(a.stats || {}, rounds),
+      )
       .map((p) => {
         const s = p.stats || {};
         const name = p.name || p.steamid || "Unknown";
@@ -144,7 +156,11 @@ function buildStatsEmbed(data) {
     );
 
   if (duration !== null) {
-    embed.addFields({ name: "⏱️ Үргэлжилсэн", value: `${duration} мин`, inline: true });
+    embed.addFields({
+      name: "⏱️ Үргэлжилсэн",
+      value: `${duration} мин`,
+      inline: true,
+    });
   }
 
   embed.addFields(
@@ -200,13 +216,21 @@ function buildLeaderboardEmbed(lb) {
   players.sort(
     (a, b) =>
       calcRating(b.kills, b.deaths, b.assists, b.damage, b.rounds) -
-      calcRating(a.kills, a.deaths, a.assists, a.damage, a.rounds)
+      calcRating(a.kills, a.deaths, a.assists, a.damage, a.rounds),
   );
 
   const rows = players.slice(0, 10).map((p, i) => {
-    const kd = p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills.toFixed(2);
-    const hsPercent = p.kills > 0 ? Math.round((p.headshots / p.kills) * 100) : 0;
-    const rating = calcRating(p.kills, p.deaths, p.assists, p.damage, p.rounds).toFixed(2);
+    const kd =
+      p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills.toFixed(2);
+    const hsPercent =
+      p.kills > 0 ? Math.round((p.headshots / p.kills) * 100) : 0;
+    const rating = calcRating(
+      p.kills,
+      p.deaths,
+      p.assists,
+      p.damage,
+      p.rounds,
+    ).toFixed(2);
     return `**${i + 1}. ${p.name}** — ${p.matches} match | KD:${kd} | HS:${hsPercent}% | ⭐${rating}`;
   });
 
@@ -224,10 +248,11 @@ async function sendStats(data) {
     const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
     if (!channel) return;
 
-    // Live score message-ийг устгах
     const liveMsg = liveScoreMessages.get(data.matchid);
     if (liveMsg) {
-      try { await liveMsg.delete(); } catch (_) {}
+      try {
+        await liveMsg.delete();
+      } catch (_) {}
       liveScoreMessages.delete(data.matchid);
     }
 
@@ -262,7 +287,9 @@ async function updateLiveScore(data) {
 const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/webhook") {
     let body = "";
-    req.on("data", (chunk) => { body += chunk; });
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
     req.on("end", async () => {
       try {
         const data = JSON.parse(body);
@@ -282,21 +309,17 @@ const server = http.createServer((req, res) => {
 
           await updateLiveScore(data);
 
-          // Match дуусах нөхцөл: 13 эсвэл OT (16, 19, 22...) — (score - 13) % 3 === 0
           const isMatchOver =
-            maxScore >= 13 &&
-            (maxScore - 13) % 3 === 0 &&
-            score1 !== score2;
+            maxScore >= 13 && (maxScore - 13) % 3 === 0 && score1 !== score2;
 
           if (isMatchOver && !sentMatches.has(matchid)) {
             sentMatches.add(matchid);
-            console.log(`🎯 Match дууслаа! ${score1}-${score2} Stats илгээж байна...`);
+            console.log(`🎯 Match дууслаа! ${score1}-${score2}`);
             await sendStats(data);
           }
         }
 
         if (event === "map_result") {
-          console.log("📩 map_result ирлээ — илгээж байна...");
           if (!sentMatches.has(data.matchid)) {
             sentMatches.add(data.matchid);
             await sendStats(data);
@@ -312,10 +335,13 @@ const server = http.createServer((req, res) => {
       }
     });
   } else if (req.method === "GET" && req.url === "/leaderboard") {
-    client.channels.fetch(DISCORD_CHANNEL_ID).then(async (channel) => {
-      const lb = loadLeaderboard();
-      await channel.send({ embeds: [buildLeaderboardEmbed(lb)] });
-    }).catch(() => {});
+    client.channels
+      .fetch(DISCORD_CHANNEL_ID)
+      .then(async (channel) => {
+        const lb = loadLeaderboard();
+        await channel.send({ embeds: [buildLeaderboardEmbed(lb)] });
+      })
+      .catch(() => {});
     res.writeHead(200);
     res.end("Leaderboard илгээгдлээ!");
   } else {
@@ -328,10 +354,23 @@ const server = http.createServer((req, res) => {
 
 client.once("clientReady", async () => {
   console.log(`✅ Bot нэвтэрлээ: ${client.user.tag}`);
+
   server.listen(PORT, () => {
     console.log(`🌐 Webhook сервер port ${PORT} дээр ажиллаж байна.`);
-    console.log(`🔗 Webhook URL: https://overgrievous-katerine-nonadhesively.ngrok-free.dev/webhook`);
+    console.log(`🔗 Webhook URL: ${RENDER_URL}/webhook`);
   });
+
+  // Render унтрахгүйн тулд 14 минут тутамд ping хийх
+  setInterval(
+    () => {
+      https
+        .get(RENDER_URL, (res) => {
+          console.log(`🏓 Ping! Status: ${res.statusCode}`);
+        })
+        .on("error", () => {});
+    },
+    14 * 60 * 1000,
+  );
 });
 
 client.login(process.env.DISCORD_TOKEN);
