@@ -408,6 +408,11 @@ client.on("error", (err) => {
   console.error("❌ Discord client error:", err.message);
 });
 
+client.on("debug", (msg) => {
+  if (msg.includes("Heartbeat") || msg.includes("Session")) return;
+  console.log("🔍", msg);
+});
+
 client.once("ready", async () => {
   console.log(`✅ Bot нэвтэрлээ: ${client.user.tag}`);
 
