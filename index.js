@@ -435,6 +435,20 @@ if (!token) {
   console.error("❌ DISCORD_TOKEN тохируулаагүй байна!");
 } else {
   console.log(`🔑 Token олдлоо (${token.slice(0, 5)}...)`);
+
+  // Discord API руу хүрч чадаж байгаа эсэхийг шалгах
+  https.get("https://discord.com/api/v10/gateway/bot", {
+    headers: { Authorization: `Bot ${token}` }
+  }, (res) => {
+    let body = "";
+    res.on("data", (c) => body += c);
+    res.on("end", () => {
+      console.log(`🌐 Gateway API хариу: ${res.statusCode} - ${body}`);
+    });
+  }).on("error", (err) => {
+    console.error("❌ Discord API руу холбогдож чадсангүй:", err.message);
+  });
+
   client.login(token).catch((err) => {
     console.error("❌ Discord login амжилтгүй:", err.message);
   });
