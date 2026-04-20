@@ -6,22 +6,26 @@ const fs = require("fs");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
-  rest: { timeout: 30000 },
 });
 
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const PORT = process.env.PORT || 3000;
-const LEADERBOARD_FILE = "./leaderboard.json";
+
 const SENT_MATCHES_FILE = "./sent_matches.json";
 const LIVE_MESSAGES_FILE = "./live_messages.json";
+
 const RENDER_URL = "https://discord-bot-cgcommunity.onrender.com";
 
-// ── Persistent state ─────────────────────────────────────────────────────────
+// ── Storage ─────────────────────────
 
 function loadJSON(file, fallback) {
   try {
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (_) {}
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, "utf8"));
+    }
+  } catch (e) {
+    console.error("JSON load error:", e.message);
+  }
   return fallback;
 }
 
@@ -30,9 +34,11 @@ function saveJSON(file, data) {
 }
 
 const sentMatches = new Set(loadJSON(SENT_MATCHES_FILE, []));
-const liveMessageIds = loadJSON(LIVE_MESSAGES_FILE, {}); // { matchid: messageId }
+const liveMessageIds = loadJSON(LIVE_MESSAGES_FILE, {});
+
 const liveScoreMessages = new Map();
 const matchStartTimes = new Map();
+
 let cachedChannel = null;
 
 async function getChannel() {
@@ -41,341 +47,161 @@ async function getChannel() {
   return cachedChannel;
 }
 
-function saveSentMatches() {
-  saveJSON(SENT_MATCHES_FILE, [...sentMatches]);
+// ── Helpers ─────────────────────────
+
+// ⚠️ matchid байхгүй үед fallback key
+function getMatchKey(data) {
+  return data.matchid || `${data.map}_${data.round_number || 0}`;
 }
 
-function saveLiveMessageIds() {
-  saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
-}
-
-// ── Leaderboard ──────────────────────────────────────────────────────────────
-
-function loadLeaderboard() {
-  try {
-    if (fs.existsSync(LEADERBOARD_FILE)) {
-      return JSON.parse(fs.readFileSync(LEADERBOARD_FILE, "utf8"));
-    }
-  } catch (_) {}
-  return {};
-}
-
-function saveLeaderboard(data) {
-  fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(data, null, 2));
-}
-
-function updateLeaderboard(data) {
-  const lb = loadLeaderboard();
-  const allPlayers = [
-    ...(data.team1?.players || []),
-    ...(data.team2?.players || []),
-  ];
-  const rounds = (data.team1?.score || 0) + (data.team2?.score || 0);
-
-  for (const p of allPlayers) {
-    const id = p.steamid || p.name || "unknown";
-    const s = p.stats || {};
-    if (!lb[id]) {
-      lb[id] = {
-        name: p.name || id,
-        matches: 0,
-        kills: 0,
-        deaths: 0,
-        assists: 0,
-        damage: 0,
-        headshots: 0,
-        rounds: 0,
-      };
-    }
-    const e = lb[id];
-    e.name = p.name || id;
-    e.matches += 1;
-    e.kills += s.kills || 0;
-    e.deaths += s.deaths || 0;
-    e.assists += s.assists || 0;
-    e.damage += s.damage || 0;
-    e.headshots += s.headshots || 0;
-    e.rounds += rounds;
-  }
-
-  saveLeaderboard(lb);
-}
-
-// ── Rating ───────────────────────────────────────────────────────────────────
-
-function calcRating(kills, deaths, assists, damage, rounds) {
-  if (!rounds) return 0;
-  const kpr = kills / rounds;
-  const apr = assists / rounds;
-  const dpr = deaths / rounds;
-  const adr = damage / rounds;
-  return Math.max(0, (kpr + 0.7 * apr + adr / 100 - dpr) / 0.5);
-}
-
-function playerRating(stats, rounds) {
-  return calcRating(
-    stats.kills || 0,
-    stats.deaths || 0,
-    stats.assists || 0,
-    stats.damage || 0,
-    rounds,
-  );
-}
-
-// ── Embed builders ────────────────────────────────────────────────────────────
-
-function buildStatsEmbed(data) {
-  const team1 = data.team1 || {};
-  const team2 = data.team2 || {};
-  const t1players = team1.players || [];
-  const t2players = team2.players || [];
-  const allPlayers = [...t1players, ...t2players];
-
-  const score1 = team1.score ?? 0;
-  const score2 = team2.score ?? 0;
-  const rounds = score1 + score2;
-
-  const winner =
-    score1 > score2
-      ? `🏆 ${team1.name || "Team 1"} wins!`
-      : score2 > score1
-        ? `🏆 ${team2.name || "Team 2"} wins!`
-        : "🤝 Draw!";
-
-  const mvp = allPlayers.reduce((best, p) => {
-    const r = playerRating(p.stats || {}, rounds);
-    const br = playerRating(best?.stats || {}, rounds);
-    return r > br ? p : best;
-  }, null);
-  const mvpName = mvp ? mvp.name || mvp.steamid || "Unknown" : null;
-
-  const startTime = matchStartTimes.get(data.matchid);
-  const duration = startTime
-    ? Math.round((Date.now() - startTime) / 60000)
-    : null;
-
-  const formatPlayers = (players) => {
-    if (!players.length) return "*Тоглогч байхгүй*";
-    return players
-      .sort(
-        (a, b) =>
-          playerRating(b.stats || {}, rounds) -
-          playerRating(a.stats || {}, rounds),
-      )
-      .map((p) => {
-        const s = p.stats || {};
-        const name = p.name || p.steamid || "Unknown";
-        const k = s.kills || 0;
-        const d = s.deaths || 0;
-        const a = s.assists || 0;
-        const dmg = s.damage || 0;
-        const hs = s.headshots || 0;
-        const hsPercent = k > 0 ? Math.round((hs / k) * 100) : 0;
-        const kd = d > 0 ? (k / d).toFixed(2) : k.toFixed(2);
-        const rating = playerRating(s, rounds).toFixed(2);
-        const star = name === mvpName ? " 🌟" : "";
-        return `**${name}${star}** — K:${k}/D:${d}/A:${a} | KD:${kd} | DMG:${dmg} | HS:${hsPercent}% | ⭐${rating}`;
-      })
-      .join("\n");
-  };
-
-  const embed = new EmbedBuilder()
-    .setTitle("🎮 CS2 Match дууслаа!")
-    .setColor(0x00b4d8)
-    .addFields(
-      { name: "🗺️ Map", value: data.map || "Unknown", inline: true },
-      { name: "🔢 Нийт round", value: String(rounds), inline: true },
-    );
-
-  if (duration !== null) {
-    embed.addFields({
-      name: "⏱️ Үргэлжилсэн",
-      value: `${duration} мин`,
-      inline: true,
-    });
-  }
-
-  embed.addFields(
-    {
-      name: `🔵 ${team1.name || "Team 1"} — ${score1} оноо`,
-      value: formatPlayers(t1players),
-      inline: false,
-    },
-    {
-      name: `🔴 ${team2.name || "Team 2"} — ${score2} оноо`,
-      value: formatPlayers(t2players),
-      inline: false,
-    },
-    { name: "🏅 Үр дүн", value: winner, inline: true },
-  );
-
-  if (mvpName) {
-    embed.addFields({ name: "🌟 MVP", value: mvpName, inline: true });
-  }
-
-  embed.setTimestamp();
-  return embed;
-}
+// ── Embed ─────────────────────────
 
 function buildLiveEmbed(data) {
-  const team1 = data.team1 || {};
-  const team2 = data.team2 || {};
-  const score1 = team1.score ?? 0;
-  const score2 = team2.score ?? 0;
+  const t1 = data.team1 || {};
+  const t2 = data.team2 || {};
 
   return new EmbedBuilder()
     .setTitle("📊 Live Score")
     .setColor(0xffa500)
     .addFields(
-      { name: team1.name || "Team 1", value: String(score1), inline: true },
-      { name: "VS", value: "—", inline: true },
-      { name: team2.name || "Team 2", value: String(score2), inline: true },
-      { name: "🔢 Round", value: String(data.round_number || 0), inline: true },
-      { name: "🗺️ Map", value: data.map || "Unknown", inline: true },
+      { name: t1.name || "Team 1", value: String(t1.score ?? 0), inline: true },
+      { name: "VS", value: "-", inline: true },
+      { name: t2.name || "Team 2", value: String(t2.score ?? 0), inline: true },
+      { name: "Round", value: String(data.round_number || 0), inline: true },
+      { name: "Map", value: data.map || "Unknown", inline: true },
     )
     .setTimestamp();
 }
 
-function buildLeaderboardEmbed(lb) {
-  const players = Object.values(lb);
-  if (!players.length) {
-    return new EmbedBuilder()
-      .setTitle("🏆 Leaderboard")
-      .setDescription("Одоогоор мэдээлэл байхгүй.")
-      .setColor(0xffd700);
-  }
-
-  players.sort(
-    (a, b) =>
-      calcRating(b.kills, b.deaths, b.assists, b.damage, b.rounds) -
-      calcRating(a.kills, a.deaths, a.assists, a.damage, a.rounds),
-  );
-
-  const rows = players.slice(0, 10).map((p, i) => {
-    const kd =
-      p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills.toFixed(2);
-    const hsPercent =
-      p.kills > 0 ? Math.round((p.headshots / p.kills) * 100) : 0;
-    const rating = calcRating(
-      p.kills,
-      p.deaths,
-      p.assists,
-      p.damage,
-      p.rounds,
-    ).toFixed(2);
-    return `**${i + 1}. ${p.name}** — ${p.matches} match | KD:${kd} | HS:${hsPercent}% | ⭐${rating}`;
-  });
+function buildStatsEmbed(data) {
+  const t1 = data.team1 || {};
+  const t2 = data.team2 || {};
 
   return new EmbedBuilder()
-    .setTitle("🏆 Leaderboard — Top 10")
-    .setColor(0xffd700)
-    .setDescription(rows.join("\n"))
+    .setTitle("🎮 MATCH FINISHED")
+    .setColor(0x00b4d8)
+    .addFields(
+      { name: "Map", value: data.map || "Unknown", inline: true },
+      {
+        name: "Score",
+        value: `${t1.score ?? 0} - ${t2.score ?? 0}`,
+        inline: true,
+      },
+    )
     .setTimestamp();
 }
 
-// ── Actions ───────────────────────────────────────────────────────────────────
-
-async function sendStats(data) {
-  try {
-    const channel = await getChannel();
-    if (!channel) return;
-
-    // Live score message-ийг устгана
-    const liveMsg = liveScoreMessages.get(data.matchid);
-    if (liveMsg) {
-      try { await liveMsg.delete(); } catch (_) {}
-      liveScoreMessages.delete(data.matchid);
-    } else if (liveMessageIds[data.matchid]) {
-      try {
-        const msg = await channel.messages.fetch(liveMessageIds[data.matchid]);
-        await msg.delete();
-      } catch (_) {}
-    }
-    delete liveMessageIds[data.matchid];
-    saveLiveMessageIds();
-
-    await channel.send({ embeds: [buildStatsEmbed(data)] });
-    updateLeaderboard(data);
-    saveSentMatches();
-    matchStartTimes.delete(data.matchid);
-    console.log("✅ Stats Discord-д илгээгдлээ!");
-  } catch (err) {
-    console.error("sendStats error:", err.message);
-  }
-}
+// ── LIVE UPDATE ─────────────────────────
 
 async function updateLiveScore(data) {
+  const key = getMatchKey(data);
+
   try {
     const channel = await getChannel();
-    if (!channel) return;
 
-    // Memory-д message object байвал шууд edit хийнэ
-    const existing = liveScoreMessages.get(data.matchid);
-    if (existing) {
-      try {
-        await existing.edit({ embeds: [buildLiveEmbed(data)] });
-        return;
-      } catch (_) {
-        liveScoreMessages.delete(data.matchid);
-      }
-    }
+    console.log("🔄 Updating live score:", key);
 
-    // File-д хадгалсан message ID байвал fetch хийж edit хийнэ
-    const savedId = liveMessageIds[data.matchid];
-    if (savedId) {
+    // 1. Memory cache
+    if (liveScoreMessages.has(key)) {
       try {
-        const msg = await channel.messages.fetch(savedId);
+        const msg = liveScoreMessages.get(key);
         await msg.edit({ embeds: [buildLiveEmbed(data)] });
-        liveScoreMessages.set(data.matchid, msg);
+        console.log("✏️ Edited (memory)");
         return;
-      } catch (_) {
-        // Message устсан бол шинэ үүсгэнэ
-        delete liveMessageIds[data.matchid];
-        saveLiveMessageIds();
+      } catch (err) {
+        console.error("❌ Memory edit fail:", err.message);
+        liveScoreMessages.delete(key);
       }
     }
 
-    // Шинэ message илгээнэ
+    // 2. File cache
+    if (liveMessageIds[key]) {
+      try {
+        const msg = await channel.messages.fetch(liveMessageIds[key]);
+        await msg.edit({ embeds: [buildLiveEmbed(data)] });
+        liveScoreMessages.set(key, msg);
+        console.log("✏️ Edited (fetch)");
+        return;
+      } catch (err) {
+        console.error("❌ Fetch edit fail:", err.message);
+        delete liveMessageIds[key];
+        saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
+      }
+    }
+
+    // 3. Create new
     const msg = await channel.send({ embeds: [buildLiveEmbed(data)] });
-    liveScoreMessages.set(data.matchid, msg);
-    liveMessageIds[data.matchid] = msg.id;
-    saveLiveMessageIds();
+    liveScoreMessages.set(key, msg);
+    liveMessageIds[key] = msg.id;
+    saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
+
+    console.log("🆕 New live message created");
   } catch (err) {
-    console.error("updateLiveScore error:", err.message);
+    console.error("❌ updateLiveScore error:", err.message);
   }
 }
 
-// ── HTTP server ───────────────────────────────────────────────────────────────
+// ── FINAL STATS ─────────────────────────
+
+async function sendStats(data) {
+  const key = getMatchKey(data);
+
+  try {
+    const channel = await getChannel();
+
+    console.log("🏁 Sending stats:", key);
+
+    // live message устгах
+    if (liveMessageIds[key]) {
+      try {
+        const msg = await channel.messages.fetch(liveMessageIds[key]);
+        await msg.delete();
+        console.log("🗑️ Deleted live message");
+      } catch (err) {
+        console.error("❌ Delete fail:", err.message);
+      }
+      delete liveMessageIds[key];
+      saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
+    }
+
+    await channel.send({ embeds: [buildStatsEmbed(data)] });
+
+    sentMatches.add(key);
+    saveJSON(SENT_MATCHES_FILE, [...sentMatches]);
+
+    console.log("✅ Stats sent");
+  } catch (err) {
+    console.error("❌ sendStats error:", err.message);
+  }
+}
+
+// ── SERVER ─────────────────────────
 
 const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/webhook") {
     let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
+
+    req.on("data", (chunk) => (body += chunk));
+
     req.on("end", async () => {
       try {
         const data = JSON.parse(body);
+
+        console.log("📦 FULL DATA:", data);
+
         const event = data.event || "unknown";
-        const matchid = data.matchid || "unknown";
-        console.log(`📩 Event: "${event}" | Match: ${matchid}`);
+        const key = getMatchKey(data);
 
+        console.log("📩 EVENT:", event, "| KEY:", key);
+
+        // 🔄 LIVE
         if (event === "round_end") {
-          if (!matchStartTimes.has(matchid)) {
-            matchStartTimes.set(matchid, Date.now());
-          }
-
-          const score1 = data.team1?.score || 0;
-          const score2 = data.team2?.score || 0;
-          console.log(`📊 Score: ${score1} - ${score2}`);
-
           await updateLiveScore(data);
         }
 
-        if (event === "map_result") {
-          if (!sentMatches.has(data.matchid)) {
-            sentMatches.add(data.matchid);
-            saveSentMatches();
+        // 🏁 FINAL (FIXED)
+        if (event === "map_end" || event === "match_end") {
+          if (!sentMatches.has(key)) {
             await sendStats(data);
           }
         }
@@ -383,60 +209,34 @@ const server = http.createServer((req, res) => {
         res.writeHead(200);
         res.end("OK");
       } catch (err) {
-        console.error("Webhook error:", err.message);
+        console.error("❌ Webhook error:", err.message);
         res.writeHead(400);
         res.end("Bad Request");
       }
     });
-  } else if (req.method === "GET" && req.url === "/leaderboard") {
-    client.channels
-      .fetch(DISCORD_CHANNEL_ID)
-      .then(async (channel) => {
-        const lb = loadLeaderboard();
-        await channel.send({ embeds: [buildLeaderboardEmbed(lb)] });
-      })
-      .catch(() => {});
-    res.writeHead(200);
-    res.end("Leaderboard илгээгдлээ!");
   } else {
     res.writeHead(200);
-    res.end("Bot is running!");
+    res.end("Bot running");
   }
 });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
+// ── START ─────────────────────────
 
-// Port-г шууд нээнэ (Render detect хийхийн тулд)
 server.listen(PORT, () => {
-  console.log(`🌐 Webhook сервер port ${PORT} дээр ажиллаж байна.`);
-  console.log(`🔗 Webhook URL: ${RENDER_URL}/webhook`);
+  console.log(`🌐 Server running on ${PORT}`);
 });
 
-client.on("error", (err) => {
-  console.error("❌ Discord client error:", err.message);
-});
+client.once("ready", () => {
+  console.log("✅ Bot ready:", client.user.tag);
 
-client.once("ready", async () => {
-  console.log(`✅ Bot нэвтэрлээ: ${client.user.tag}`);
-
-  // Render унтрахгүйн тулд 14 минут тутамд ping хийх
   setInterval(
     () => {
-      https
-        .get(RENDER_URL, (res) => {
-          console.log(`🏓 Ping! Status: ${res.statusCode}`);
-        })
-        .on("error", () => {});
+      https.get(RENDER_URL, () => {
+        console.log("🏓 Ping");
+      });
     },
     14 * 60 * 1000,
   );
 });
 
-const token = process.env.DISCORD_TOKEN;
-if (!token) {
-  console.error("❌ DISCORD_TOKEN тохируулаагүй байна!");
-} else {
-  client.login(token).catch((err) => {
-    console.error("❌ Discord login амжилтгүй:", err.message);
-  });
-}
+client.login(process.env.DISCORD_TOKEN);
