@@ -11,11 +11,35 @@ const client = new Client({
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
 const PORT = 3000;
 const LEADERBOARD_FILE = "./leaderboard.json";
+const SENT_MATCHES_FILE = "./sent_matches.json";
+const LIVE_MESSAGES_FILE = "./live_messages.json";
 const RENDER_URL = "https://discord-bot-cgcommunity.onrender.com";
 
-const sentMatches = new Set();
+// ── Persistent state ─────────────────────────────────────────────────────────
+
+function loadJSON(file, fallback) {
+  try {
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (_) {}
+  return fallback;
+}
+
+function saveJSON(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+}
+
+const sentMatches = new Set(loadJSON(SENT_MATCHES_FILE, []));
+const liveMessageIds = loadJSON(LIVE_MESSAGES_FILE, {}); // { matchid: messageId }
 const liveScoreMessages = new Map();
 const matchStartTimes = new Map();
+
+function saveSentMatches() {
+  saveJSON(SENT_MATCHES_FILE, [...sentMatches]);
+}
+
+function saveLiveMessageIds() {
+  saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
+}
 
 // ── Leaderboard ──────────────────────────────────────────────────────────────
 
@@ -248,16 +272,23 @@ async function sendStats(data) {
     const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
     if (!channel) return;
 
+    // Live score message-ийг устгана
     const liveMsg = liveScoreMessages.get(data.matchid);
     if (liveMsg) {
-      try {
-        await liveMsg.delete();
-      } catch (_) {}
+      try { await liveMsg.delete(); } catch (_) {}
       liveScoreMessages.delete(data.matchid);
+    } else if (liveMessageIds[data.matchid]) {
+      try {
+        const msg = await channel.messages.fetch(liveMessageIds[data.matchid]);
+        await msg.delete();
+      } catch (_) {}
     }
+    delete liveMessageIds[data.matchid];
+    saveLiveMessageIds();
 
     await channel.send({ embeds: [buildStatsEmbed(data)] });
     updateLeaderboard(data);
+    saveSentMatches();
     matchStartTimes.delete(data.matchid);
     console.log("✅ Stats Discord-д илгээгдлээ!");
   } catch (err) {
@@ -270,18 +301,37 @@ async function updateLiveScore(data) {
     const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
     if (!channel) return;
 
+    // Memory-д message object байвал шууд edit хийнэ
     const existing = liveScoreMessages.get(data.matchid);
     if (existing) {
       try {
         await existing.edit({ embeds: [buildLiveEmbed(data)] });
         return;
       } catch (_) {
-        // Message олдохгүй бол шинэ үүсгэнэ
         liveScoreMessages.delete(data.matchid);
       }
     }
+
+    // File-д хадгалсан message ID байвал fetch хийж edit хийнэ
+    const savedId = liveMessageIds[data.matchid];
+    if (savedId) {
+      try {
+        const msg = await channel.messages.fetch(savedId);
+        await msg.edit({ embeds: [buildLiveEmbed(data)] });
+        liveScoreMessages.set(data.matchid, msg);
+        return;
+      } catch (_) {
+        // Message устсан бол шинэ үүсгэнэ
+        delete liveMessageIds[data.matchid];
+        saveLiveMessageIds();
+      }
+    }
+
+    // Шинэ message илгээнэ
     const msg = await channel.send({ embeds: [buildLiveEmbed(data)] });
     liveScoreMessages.set(data.matchid, msg);
+    liveMessageIds[data.matchid] = msg.id;
+    saveLiveMessageIds();
   } catch (err) {
     console.error("updateLiveScore error:", err.message);
   }
@@ -309,24 +359,15 @@ const server = http.createServer((req, res) => {
 
           const score1 = data.team1?.score || 0;
           const score2 = data.team2?.score || 0;
-          const maxScore = Math.max(score1, score2);
           console.log(`📊 Score: ${score1} - ${score2}`);
 
           await updateLiveScore(data);
-
-          const isMatchOver =
-            maxScore >= 13 && (maxScore - 13) % 3 === 0 && score1 !== score2;
-
-          if (isMatchOver && !sentMatches.has(matchid)) {
-            sentMatches.add(matchid);
-            console.log(`🎯 Match дууслаа! ${score1}-${score2}`);
-            await sendStats(data);
-          }
         }
 
         if (event === "map_result") {
           if (!sentMatches.has(data.matchid)) {
             sentMatches.add(data.matchid);
+            saveSentMatches();
             await sendStats(data);
           }
         }
