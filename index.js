@@ -424,6 +424,12 @@ client.once("ready", async () => {
   );
 });
 
-client.login(process.env.DISCORD_TOKEN).catch((err) => {
-  console.error("❌ Discord login амжилтгүй:", err.message);
-});
+const token = process.env.DISCORD_TOKEN;
+if (!token) {
+  console.error("❌ DISCORD_TOKEN тохируулаагүй байна!");
+} else {
+  console.log(`🔑 Token олдлоо (${token.slice(0, 5)}...)`);
+  client.login(token).catch((err) => {
+    console.error("❌ Discord login амжилтгүй:", err.message);
+  });
+}
