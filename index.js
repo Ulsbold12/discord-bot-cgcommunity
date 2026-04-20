@@ -66,14 +66,16 @@ function calcRating(k, d, a, dmg, r) {
 // ── EMBEDS ─────────────────────────
 
 function buildLiveEmbed(data) {
+  const t1 = data.team1 || {};
+  const t2 = data.team2 || {};
   return new EmbedBuilder()
     .setTitle("📊 LIVE SCORE")
     .setColor(0xffa500)
     .addFields(
-      { name: data.team1.name, value: String(data.team1.score), inline: true },
+      { name: t1.name || "Team 1", value: String(t1.score ?? 0), inline: true },
       { name: "VS", value: "-", inline: true },
-      { name: data.team2.name, value: String(data.team2.score), inline: true },
-      { name: "Round", value: String(data.round_number), inline: true },
+      { name: t2.name || "Team 2", value: String(t2.score ?? 0), inline: true },
+      { name: "Round", value: String(data.round_number || 0), inline: true },
     )
     .setTimestamp();
 }
@@ -163,35 +165,39 @@ function updateLeaderboard(data) {
 // ── ACTIONS ─────────────────────────
 
 async function updateLiveScore(data) {
-  const channel = await getChannel();
-  if (!channel) return;
+  try {
+    const channel = await getChannel();
+    if (!channel) return;
 
-  if (liveScoreMessages.has(data.matchid)) {
-    try {
-      await liveScoreMessages.get(data.matchid).edit({
-        embeds: [buildLiveEmbed(data)],
-      });
-      return;
-    } catch {
-      liveScoreMessages.delete(data.matchid);
+    if (liveScoreMessages.has(data.matchid)) {
+      try {
+        await liveScoreMessages.get(data.matchid).edit({
+          embeds: [buildLiveEmbed(data)],
+        });
+        return;
+      } catch {
+        liveScoreMessages.delete(data.matchid);
+      }
     }
-  }
 
-  if (liveMessageIds[data.matchid]) {
-    try {
-      const msg = await channel.messages.fetch(liveMessageIds[data.matchid]);
-      await msg.edit({ embeds: [buildLiveEmbed(data)] });
-      liveScoreMessages.set(data.matchid, msg);
-      return;
-    } catch {
-      delete liveMessageIds[data.matchid];
+    if (liveMessageIds[data.matchid]) {
+      try {
+        const msg = await channel.messages.fetch(liveMessageIds[data.matchid]);
+        await msg.edit({ embeds: [buildLiveEmbed(data)] });
+        liveScoreMessages.set(data.matchid, msg);
+        return;
+      } catch {
+        delete liveMessageIds[data.matchid];
+      }
     }
-  }
 
-  const msg = await channel.send({ embeds: [buildLiveEmbed(data)] });
-  liveScoreMessages.set(data.matchid, msg);
-  liveMessageIds[data.matchid] = msg.id;
-  saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
+    const msg = await channel.send({ embeds: [buildLiveEmbed(data)] });
+    liveScoreMessages.set(data.matchid, msg);
+    liveMessageIds[data.matchid] = msg.id;
+    saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
+  } catch (err) {
+    console.error("❌ updateLiveScore:", err.message);
+  }
 }
 
 async function sendStats(data) {
