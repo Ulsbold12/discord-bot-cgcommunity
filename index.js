@@ -33,6 +33,13 @@ const sentMatches = new Set(loadJSON(SENT_MATCHES_FILE, []));
 const liveMessageIds = loadJSON(LIVE_MESSAGES_FILE, {}); // { matchid: messageId }
 const liveScoreMessages = new Map();
 const matchStartTimes = new Map();
+let cachedChannel = null;
+
+async function getChannel() {
+  if (cachedChannel) return cachedChannel;
+  cachedChannel = await client.channels.fetch(DISCORD_CHANNEL_ID);
+  return cachedChannel;
+}
 
 function saveSentMatches() {
   saveJSON(SENT_MATCHES_FILE, [...sentMatches]);
@@ -270,7 +277,7 @@ function buildLeaderboardEmbed(lb) {
 
 async function sendStats(data) {
   try {
-    const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
+    const channel = await getChannel();
     if (!channel) return;
 
     // Live score message-ийг устгана
@@ -299,7 +306,7 @@ async function sendStats(data) {
 
 async function updateLiveScore(data) {
   try {
-    const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
+    const channel = await getChannel();
     if (!channel) return;
 
     // Memory-д message object байвал шууд edit хийнэ
@@ -409,11 +416,6 @@ client.on("error", (err) => {
   console.error("❌ Discord client error:", err.message);
 });
 
-client.on("debug", (msg) => {
-  if (msg.includes("Heartbeat") || msg.includes("Session")) return;
-  console.log("🔍", msg);
-});
-
 client.once("ready", async () => {
   console.log(`✅ Bot нэвтэрлээ: ${client.user.tag}`);
 
@@ -434,21 +436,6 @@ const token = process.env.DISCORD_TOKEN;
 if (!token) {
   console.error("❌ DISCORD_TOKEN тохируулаагүй байна!");
 } else {
-  console.log(`🔑 Token олдлоо (${token.slice(0, 5)}...)`);
-
-  // Discord API руу хүрч чадаж байгаа эсэхийг шалгах
-  https.get("https://discord.com/api/v10/gateway/bot", {
-    headers: { Authorization: `Bot ${token}` }
-  }, (res) => {
-    let body = "";
-    res.on("data", (c) => body += c);
-    res.on("end", () => {
-      console.log(`🌐 Gateway API хариу: ${res.statusCode} - ${body}`);
-    });
-  }).on("error", (err) => {
-    console.error("❌ Discord API руу холбогдож чадсангүй:", err.message);
-  });
-
   client.login(token).catch((err) => {
     console.error("❌ Discord login амжилтгүй:", err.message);
   });
