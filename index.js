@@ -5,11 +5,12 @@ const https = require("https");
 const fs = require("fs");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  rest: { timeout: 30000 },
 });
 
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const LEADERBOARD_FILE = "./leaderboard.json";
 const SENT_MATCHES_FILE = "./sent_matches.json";
 const LIVE_MESSAGES_FILE = "./live_messages.json";
