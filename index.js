@@ -5,7 +5,11 @@ const https = require("https");
 const fs = require("fs");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
@@ -223,27 +227,12 @@ const server = http.createServer((req, res) => {
 
         console.log("📦", event);
 
-        // LIVE SCORE
         if (event === "round_end") {
           await updateLiveScore(data);
-
-          const score1 = data.team1.score;
-          const score2 = data.team2.score;
-
-          const finished = data.reason === 7 || score1 >= 13 || score2 >= 13;
-
-          if (finished && !sentMatches.has(data.matchid)) {
-            await sendStats(data);
-          }
         }
 
-        // 💀 KILL FEED
-        if (event === "player_death") {
-          const channel = await getChannel();
-
-          await channel.send(
-            `💀 **${data.killer?.name}** → **${data.victim?.name}**`,
-          );
+        if (event === "map_result" && !sentMatches.has(data.matchid)) {
+          await sendStats(data);
         }
 
         res.end("OK");
