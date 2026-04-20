@@ -398,13 +398,14 @@ const server = http.createServer((req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
+// Port-г шууд нээнэ (Render detect хийхийн тулд)
+server.listen(PORT, () => {
+  console.log(`🌐 Webhook сервер port ${PORT} дээр ажиллаж байна.`);
+  console.log(`🔗 Webhook URL: ${RENDER_URL}/webhook`);
+});
+
 client.once("clientReady", async () => {
   console.log(`✅ Bot нэвтэрлээ: ${client.user.tag}`);
-
-  server.listen(PORT, () => {
-    console.log(`🌐 Webhook сервер port ${PORT} дээр ажиллаж байна.`);
-    console.log(`🔗 Webhook URL: ${RENDER_URL}/webhook`);
-  });
 
   // Render унтрахгүйн тулд 14 минут тутамд ping хийх
   setInterval(
