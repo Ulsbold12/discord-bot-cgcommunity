@@ -404,7 +404,11 @@ server.listen(PORT, () => {
   console.log(`🔗 Webhook URL: ${RENDER_URL}/webhook`);
 });
 
-client.once("clientReady", async () => {
+client.on("error", (err) => {
+  console.error("❌ Discord client error:", err.message);
+});
+
+client.once("ready", async () => {
   console.log(`✅ Bot нэвтэрлээ: ${client.user.tag}`);
 
   // Render унтрахгүйн тулд 14 минут тутамд ping хийх
@@ -420,4 +424,6 @@ client.once("clientReady", async () => {
   );
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN).catch((err) => {
+  console.error("❌ Discord login амжилтгүй:", err.message);
+});
