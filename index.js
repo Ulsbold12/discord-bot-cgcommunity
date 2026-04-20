@@ -13,19 +13,16 @@ const PORT = process.env.PORT || 3000;
 
 const SENT_MATCHES_FILE = "./sent_matches.json";
 const LIVE_MESSAGES_FILE = "./live_messages.json";
+const LEADERBOARD_FILE = "./leaderboard.json";
 
 const RENDER_URL = "https://discord-bot-cgcommunity.onrender.com";
 
-// ── Storage ─────────────────────────
+// ── STORAGE ─────────────────────────
 
 function loadJSON(file, fallback) {
   try {
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, "utf8"));
-    }
-  } catch (e) {
-    console.error("JSON load error:", e.message);
-  }
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {}
   return fallback;
 }
 
@@ -35,9 +32,17 @@ function saveJSON(file, data) {
 
 const sentMatches = new Set(loadJSON(SENT_MATCHES_FILE, []));
 const liveMessageIds = loadJSON(LIVE_MESSAGES_FILE, {});
-
 const liveScoreMessages = new Map();
-const matchStartTimes = new Map();
+
+function loadLeaderboard() {
+  return loadJSON(LEADERBOARD_FILE, {});
+}
+
+function saveLeaderboard(data) {
+  saveJSON(LEADERBOARD_FILE, data);
+}
+
+// ── DISCORD ─────────────────────────
 
 let cachedChannel = null;
 
@@ -47,132 +52,160 @@ async function getChannel() {
   return cachedChannel;
 }
 
-// ── Helpers ─────────────────────────
+// ── RATING ─────────────────────────
 
-// ⚠️ matchid байхгүй үед fallback key
-function getMatchKey(data) {
-  return data.matchid || `${data.map}_${data.round_number || 0}`;
+function calcRating(k, d, a, dmg, r) {
+  if (!r) return 0;
+  return Math.max(0, (k / r + 0.7 * (a / r) + dmg / r / 100 - d / r) / 0.5);
 }
 
-// ── Embed ─────────────────────────
+// ── EMBEDS ─────────────────────────
 
 function buildLiveEmbed(data) {
-  const t1 = data.team1 || {};
-  const t2 = data.team2 || {};
-
   return new EmbedBuilder()
-    .setTitle("📊 Live Score")
+    .setTitle("📊 LIVE SCORE")
     .setColor(0xffa500)
     .addFields(
-      { name: t1.name || "Team 1", value: String(t1.score ?? 0), inline: true },
+      { name: data.team1.name, value: String(data.team1.score), inline: true },
       { name: "VS", value: "-", inline: true },
-      { name: t2.name || "Team 2", value: String(t2.score ?? 0), inline: true },
-      { name: "Round", value: String(data.round_number || 0), inline: true },
-      { name: "Map", value: data.map || "Unknown", inline: true },
+      { name: data.team2.name, value: String(data.team2.score), inline: true },
+      { name: "Round", value: String(data.round_number), inline: true },
     )
     .setTimestamp();
 }
 
 function buildStatsEmbed(data) {
-  const t1 = data.team1 || {};
-  const t2 = data.team2 || {};
+  const t1 = data.team1;
+  const t2 = data.team2;
+
+  const players = [...t1.players, ...t2.players];
+  const rounds = t1.score + t2.score;
+
+  const mvp = players.reduce((b, p) => {
+    const r = calcRating(
+      p.stats.kills,
+      p.stats.deaths,
+      p.stats.assists,
+      p.stats.damage,
+      rounds,
+    );
+    const br = calcRating(
+      b?.stats?.kills || 0,
+      b?.stats?.deaths || 0,
+      b?.stats?.assists || 0,
+      b?.stats?.damage || 0,
+      rounds,
+    );
+    return r > br ? p : b;
+  }, null);
+
+  const format = (arr) =>
+    arr
+      .map((p) => {
+        const s = p.stats;
+        const kd =
+          s.deaths > 0 ? (s.kills / s.deaths).toFixed(2) : s.kills.toFixed(2);
+
+        const hs = s.kills > 0 ? Math.round((s.headshots / s.kills) * 100) : 0;
+
+        const star = p === mvp ? " 🌟" : "";
+
+        return `**${p.name}${star}** — K:${s.kills} D:${s.deaths} | KD:${kd} | HS:${hs}%`;
+      })
+      .join("\n");
 
   return new EmbedBuilder()
-    .setTitle("🎮 MATCH FINISHED")
+    .setTitle("🎮 MATCH RESULT")
     .setColor(0x00b4d8)
     .addFields(
-      { name: "Map", value: data.map || "Unknown", inline: true },
-      {
-        name: "Score",
-        value: `${t1.score ?? 0} - ${t2.score ?? 0}`,
-        inline: true,
-      },
+      { name: "Score", value: `${t1.score} - ${t2.score}`, inline: true },
+      { name: `🔵 ${t1.name}`, value: format(t1.players) },
+      { name: `🔴 ${t2.name}`, value: format(t2.players) },
+      { name: "🌟 MVP", value: mvp?.name || "Unknown" },
     )
     .setTimestamp();
 }
 
-// ── LIVE UPDATE ─────────────────────────
+// ── LEADERBOARD ─────────────────────────
 
-async function updateLiveScore(data) {
-  const key = getMatchKey(data);
+function updateLeaderboard(data) {
+  const lb = loadLeaderboard();
 
-  try {
-    const channel = await getChannel();
+  [...data.team1.players, ...data.team2.players].forEach((p) => {
+    const id = p.name;
+    const s = p.stats;
 
-    console.log("🔄 Updating live score:", key);
-
-    // 1. Memory cache
-    if (liveScoreMessages.has(key)) {
-      try {
-        const msg = liveScoreMessages.get(key);
-        await msg.edit({ embeds: [buildLiveEmbed(data)] });
-        console.log("✏️ Edited (memory)");
-        return;
-      } catch (err) {
-        console.error("❌ Memory edit fail:", err.message);
-        liveScoreMessages.delete(key);
-      }
+    if (!lb[id]) {
+      lb[id] = {
+        name: id,
+        kills: 0,
+        deaths: 0,
+        assists: 0,
+        damage: 0,
+        rounds: 0,
+      };
     }
 
-    // 2. File cache
-    if (liveMessageIds[key]) {
-      try {
-        const msg = await channel.messages.fetch(liveMessageIds[key]);
-        await msg.edit({ embeds: [buildLiveEmbed(data)] });
-        liveScoreMessages.set(key, msg);
-        console.log("✏️ Edited (fetch)");
-        return;
-      } catch (err) {
-        console.error("❌ Fetch edit fail:", err.message);
-        delete liveMessageIds[key];
-        saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
-      }
-    }
+    lb[id].kills += s.kills;
+    lb[id].deaths += s.deaths;
+    lb[id].assists += s.assists;
+    lb[id].damage += s.damage;
+    lb[id].rounds += data.team1.score + data.team2.score;
+  });
 
-    // 3. Create new
-    const msg = await channel.send({ embeds: [buildLiveEmbed(data)] });
-    liveScoreMessages.set(key, msg);
-    liveMessageIds[key] = msg.id;
-    saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
-
-    console.log("🆕 New live message created");
-  } catch (err) {
-    console.error("❌ updateLiveScore error:", err.message);
-  }
+  saveLeaderboard(lb);
 }
 
-// ── FINAL STATS ─────────────────────────
+// ── ACTIONS ─────────────────────────
+
+async function updateLiveScore(data) {
+  const channel = await getChannel();
+
+  if (liveScoreMessages.has(data.matchid)) {
+    try {
+      await liveScoreMessages.get(data.matchid).edit({
+        embeds: [buildLiveEmbed(data)],
+      });
+      return;
+    } catch {
+      liveScoreMessages.delete(data.matchid);
+    }
+  }
+
+  if (liveMessageIds[data.matchid]) {
+    try {
+      const msg = await channel.messages.fetch(liveMessageIds[data.matchid]);
+      await msg.edit({ embeds: [buildLiveEmbed(data)] });
+      liveScoreMessages.set(data.matchid, msg);
+      return;
+    } catch {
+      delete liveMessageIds[data.matchid];
+    }
+  }
+
+  const msg = await channel.send({ embeds: [buildLiveEmbed(data)] });
+  liveScoreMessages.set(data.matchid, msg);
+  liveMessageIds[data.matchid] = msg.id;
+  saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
+}
 
 async function sendStats(data) {
-  const key = getMatchKey(data);
+  const channel = await getChannel();
 
-  try {
-    const channel = await getChannel();
-
-    console.log("🏁 Sending stats:", key);
-
-    // live message устгах
-    if (liveMessageIds[key]) {
-      try {
-        const msg = await channel.messages.fetch(liveMessageIds[key]);
-        await msg.delete();
-        console.log("🗑️ Deleted live message");
-      } catch (err) {
-        console.error("❌ Delete fail:", err.message);
-      }
-      delete liveMessageIds[key];
-      saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
-    }
-
-    await channel.send({ embeds: [buildStatsEmbed(data)] });
-
-    sentMatches.add(key);
-    saveJSON(SENT_MATCHES_FILE, [...sentMatches]);
-
-    console.log("✅ Stats sent");
-  } catch (err) {
-    console.error("❌ sendStats error:", err.message);
+  if (liveMessageIds[data.matchid]) {
+    try {
+      const msg = await channel.messages.fetch(liveMessageIds[data.matchid]);
+      await msg.delete();
+    } catch {}
+    delete liveMessageIds[data.matchid];
   }
+
+  await channel.send({ embeds: [buildStatsEmbed(data)] });
+
+  updateLeaderboard(data);
+
+  sentMatches.add(data.matchid);
+  saveJSON(SENT_MATCHES_FILE, [...sentMatches]);
 }
 
 // ── SERVER ─────────────────────────
@@ -181,59 +214,94 @@ const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/webhook") {
     let body = "";
 
-    req.on("data", (chunk) => (body += chunk));
+    req.on("data", (c) => (body += c));
 
     req.on("end", async () => {
       try {
         const data = JSON.parse(body);
+        const event = data.event;
 
-        console.log("📦 FULL DATA:", data);
+        console.log("📦", event);
 
-        const event = data.event || "unknown";
-        const key = getMatchKey(data);
-
-        console.log("📩 EVENT:", event, "| KEY:", key);
-
-        // 🔄 LIVE
+        // LIVE SCORE
         if (event === "round_end") {
           await updateLiveScore(data);
-        }
 
-        // 🏁 FINAL (FIXED)
-        if (event === "map_end" || event === "match_end") {
-          if (!sentMatches.has(key)) {
+          const score1 = data.team1.score;
+          const score2 = data.team2.score;
+
+          const finished = data.reason === 7 || score1 >= 13 || score2 >= 13;
+
+          if (finished && !sentMatches.has(data.matchid)) {
             await sendStats(data);
           }
         }
 
-        res.writeHead(200);
+        // 💀 KILL FEED
+        if (event === "player_death") {
+          const channel = await getChannel();
+
+          await channel.send(
+            `💀 **${data.killer?.name}** → **${data.victim?.name}**`,
+          );
+        }
+
         res.end("OK");
-      } catch (err) {
-        console.error("❌ Webhook error:", err.message);
-        res.writeHead(400);
-        res.end("Bad Request");
+      } catch (e) {
+        console.error(e);
+        res.end("ERR");
       }
     });
   } else {
-    res.writeHead(200);
-    res.end("Bot running");
+    res.end("RUNNING");
+  }
+});
+
+// ── COMMAND (!top) ─────────────────────────
+
+client.on("messageCreate", async (msg) => {
+  if (msg.author.bot) return;
+
+  if (msg.content === "!top") {
+    const lb = loadLeaderboard();
+    const players = Object.values(lb);
+
+    players.sort(
+      (a, b) =>
+        calcRating(b.kills, b.deaths, b.assists, b.damage, b.rounds) -
+        calcRating(a.kills, a.deaths, a.assists, a.damage, a.rounds),
+    );
+
+    const text = players.slice(0, 10).map((p, i) => {
+      const kd =
+        p.deaths > 0 ? (p.kills / p.deaths).toFixed(2) : p.kills.toFixed(2);
+
+      return `${i + 1}. ${p.name} — KD:${kd}`;
+    });
+
+    msg.channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("🏆 TOP PLAYERS")
+          .setDescription(text.join("\n"))
+          .setColor(0xffd700),
+      ],
+    });
   }
 });
 
 // ── START ─────────────────────────
 
 server.listen(PORT, () => {
-  console.log(`🌐 Server running on ${PORT}`);
+  console.log("🌐 Server started");
 });
 
 client.once("ready", () => {
-  console.log("✅ Bot ready:", client.user.tag);
+  console.log("✅ Bot ready");
 
   setInterval(
     () => {
-      https.get(RENDER_URL, () => {
-        console.log("🏓 Ping");
-      });
+      https.get(RENDER_URL, () => console.log("🏓 ping"));
     },
     14 * 60 * 1000,
   );
