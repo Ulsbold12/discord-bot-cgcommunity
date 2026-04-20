@@ -51,6 +51,7 @@ let cachedChannel = null;
 
 async function getChannel() {
   if (cachedChannel) return cachedChannel;
+  if (!client.isReady()) return null;
   cachedChannel = await client.channels.fetch(DISCORD_CHANNEL_ID);
   return cachedChannel;
 }
@@ -163,6 +164,7 @@ function updateLeaderboard(data) {
 
 async function updateLiveScore(data) {
   const channel = await getChannel();
+  if (!channel) return;
 
   if (liveScoreMessages.has(data.matchid)) {
     try {
@@ -194,6 +196,7 @@ async function updateLiveScore(data) {
 
 async function sendStats(data) {
   const channel = await getChannel();
+  if (!channel) return;
 
   if (liveMessageIds[data.matchid]) {
     try {
