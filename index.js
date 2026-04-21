@@ -250,7 +250,13 @@ const server = http.createServer((req, res) => {
       }
     });
   } else {
-    res.end("RUNNING");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      bot: client.isReady() ? "online" : "offline",
+      user: client.user?.tag || null,
+      uptime: Math.round(process.uptime()) + "s",
+      matches: Object.keys(liveMessageIds).length,
+    }));
   }
 });
 
