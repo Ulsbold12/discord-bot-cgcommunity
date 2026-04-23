@@ -5,10 +5,7 @@ const https = require("https");
 const fs = require("fs");
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-  ],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
 const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
@@ -36,6 +33,7 @@ function saveJSON(file, data) {
 const sentMatches = new Set(loadJSON(SENT_MATCHES_FILE, []));
 const liveMessageIds = loadJSON(LIVE_MESSAGES_FILE, {});
 const liveScoreMessages = new Map();
+const lastRoundData = new Map();
 
 function loadLeaderboard() {
   return loadJSON(LEADERBOARD_FILE, {});
@@ -114,9 +112,9 @@ function buildStatsEmbed(data) {
 
         const hs = s.kills > 0 ? Math.round((s.headshots / s.kills) * 100) : 0;
 
-        const star = p === mvp ? " 🌟" : "";
+        const star = p === mvp ? " 🌟 MVP" : "";
 
-        return `**${p.name}${star}** — K:${s.kills} D:${s.deaths} | KD:${kd} | HS:${hs}%`;
+        return `**${p.name}**${star} — K:${s.kills} D:${s.deaths} | KD:${kd} | HS:${hs}%`;
       })
       .join("\n");
 
@@ -127,7 +125,12 @@ function buildStatsEmbed(data) {
       { name: "Score", value: `${t1.score} - ${t2.score}`, inline: true },
       { name: `🔵 ${t1.name}`, value: format(t1.players) },
       { name: `🔴 ${t2.name}`, value: format(t2.players) },
-      { name: "🌟 MVP", value: mvp?.name || "Unknown" },
+      {
+        name: "⭐ MVP ⭐",
+        value: mvp
+          ? `**${mvp.name}** — K:${mvp.stats.kills} D:${mvp.stats.deaths} A:${mvp.stats.assists} | Rating: ${calcRating(mvp.stats.kills, mvp.stats.deaths, mvp.stats.assists, mvp.stats.damage, rounds).toFixed(2)}`
+          : "Unknown",
+      },
     )
     .setTimestamp();
 }
@@ -209,7 +212,10 @@ async function sendStats(data) {
     }
 
     if (!data.team1?.players?.length || !data.team2?.players?.length) {
-      console.error("❌ sendStats: missing team/player data", JSON.stringify(data).slice(0, 500));
+      console.error(
+        "❌ sendStats: missing team/player data",
+        JSON.stringify(data).slice(0, 500),
+      );
       return;
     }
 
@@ -251,6 +257,10 @@ const server = http.createServer((req, res) => {
         console.log("📦", event, "matchid:", data.matchid);
 
         if (event === "round_end") {
+          lastRoundData.set(data.matchid, data);
+          if (data.team1?.players?.length) {
+            console.log("👥 round_end has", data.team1.players.length + data.team2.players.length, "players");
+          }
           await updateLiveScore(data);
         }
 
@@ -258,7 +268,22 @@ const server = http.createServer((req, res) => {
           if (sentMatches.has(data.matchid)) {
             console.log("⏭️ match already sent:", data.matchid);
           } else {
-            await sendStats(data);
+            // map_result players хоосон ирвэл сүүлийн round_end-ийн data ашиглана
+            let statsData = data;
+            if (
+              (!data.team1?.players?.length || !data.team2?.players?.length) &&
+              lastRoundData.has(data.matchid)
+            ) {
+              const rd = lastRoundData.get(data.matchid);
+              statsData = {
+                ...data,
+                team1: { ...data.team1, players: rd.team1?.players || [] },
+                team2: { ...data.team2, players: rd.team2?.players || [] },
+              };
+              console.log("🔄 using round_end player data for map_result");
+            }
+            await sendStats(statsData);
+            lastRoundData.delete(data.matchid);
           }
         }
 
@@ -270,12 +295,14 @@ const server = http.createServer((req, res) => {
     });
   } else {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      bot: client.isReady() ? "online" : "offline",
-      user: client.user?.tag || null,
-      uptime: Math.round(process.uptime()) + "s",
-      matches: Object.keys(liveMessageIds).length,
-    }));
+    res.end(
+      JSON.stringify({
+        bot: client.isReady() ? "online" : "offline",
+        user: client.user?.tag || null,
+        uptime: Math.round(process.uptime()) + "s",
+        matches: Object.keys(liveMessageIds).length,
+      }),
+    );
   }
 });
 
