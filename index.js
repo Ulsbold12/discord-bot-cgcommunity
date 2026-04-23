@@ -201,23 +201,38 @@ async function updateLiveScore(data) {
 }
 
 async function sendStats(data) {
-  const channel = await getChannel();
-  if (!channel) return;
+  try {
+    const channel = await getChannel();
+    if (!channel) {
+      console.error("❌ sendStats: channel not found");
+      return;
+    }
 
-  if (liveMessageIds[data.matchid]) {
-    try {
-      const msg = await channel.messages.fetch(liveMessageIds[data.matchid]);
-      await msg.delete();
-    } catch {}
-    delete liveMessageIds[data.matchid];
+    if (!data.team1?.players?.length || !data.team2?.players?.length) {
+      console.error("❌ sendStats: missing team/player data", JSON.stringify(data).slice(0, 500));
+      return;
+    }
+
+    if (liveMessageIds[data.matchid]) {
+      try {
+        const msg = await channel.messages.fetch(liveMessageIds[data.matchid]);
+        await msg.delete();
+      } catch {}
+      delete liveMessageIds[data.matchid];
+      liveScoreMessages.delete(data.matchid);
+      saveJSON(LIVE_MESSAGES_FILE, liveMessageIds);
+    }
+
+    await channel.send({ embeds: [buildStatsEmbed(data)] });
+    console.log("✅ sendStats: match", data.matchid);
+
+    updateLeaderboard(data);
+
+    sentMatches.add(data.matchid);
+    saveJSON(SENT_MATCHES_FILE, [...sentMatches]);
+  } catch (err) {
+    console.error("❌ sendStats:", err.message, err.stack);
   }
-
-  await channel.send({ embeds: [buildStatsEmbed(data)] });
-
-  updateLeaderboard(data);
-
-  sentMatches.add(data.matchid);
-  saveJSON(SENT_MATCHES_FILE, [...sentMatches]);
 }
 
 // ── SERVER ─────────────────────────
@@ -233,14 +248,18 @@ const server = http.createServer((req, res) => {
         const data = JSON.parse(body);
         const event = data.event;
 
-        console.log("📦", event);
+        console.log("📦", event, "matchid:", data.matchid);
 
         if (event === "round_end") {
           await updateLiveScore(data);
         }
 
-        if (event === "map_result" && !sentMatches.has(data.matchid)) {
-          await sendStats(data);
+        if (event === "map_result") {
+          if (sentMatches.has(data.matchid)) {
+            console.log("⏭️ match already sent:", data.matchid);
+          } else {
+            await sendStats(data);
+          }
         }
 
         res.end("OK");
